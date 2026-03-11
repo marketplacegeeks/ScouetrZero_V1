@@ -4,6 +4,12 @@
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --color-burgundy: #800020;
+  --color-burgundy-dark: #630D16;
+  --color-canvas: #FAF9F6;
+  --color-plum: #2D1B1E;
+  --color-sand: #E8E2D6;
 }
 
 @layer base {

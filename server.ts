@@ -32,8 +32,9 @@ const count = db.prepare("SELECT COUNT(*) as count FROM jobs").get() as { count:
 const checkNew = db.prepare("SELECT COUNT(*) as count FROM jobs WHERE role = 'Growth Product Manager'").get() as { count: number };
 const checkBatch3 = db.prepare("SELECT COUNT(*) as count FROM jobs WHERE role = 'Lead Product Manager, AI Ethics'").get() as { count: number };
 const checkBatch4 = db.prepare("SELECT COUNT(*) as count FROM jobs WHERE role = 'Product Manager, FinTech (Wealth Management)'").get() as { count: number };
+const checkBatch5 = db.prepare("SELECT COUNT(*) as count FROM jobs WHERE role = 'Product Manager, No Email'").get() as { count: number };
 
-if (count.count === 0 || checkNew.count === 0 || checkBatch3.count === 0 || checkBatch4.count === 0) {
+if (count.count === 0 || checkNew.count === 0 || checkBatch3.count === 0 || checkBatch4.count === 0 || checkBatch5.count === 0) {
   const insert = db.prepare(`
     INSERT INTO jobs (role, details, company, city, country, compensation, email, link)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -126,6 +127,15 @@ if (count.count === 0 || checkNew.count === 0 || checkBatch3.count === 0 || chec
     insert.run("Senior PM, FinTech (Crypto)", "Banking on the blockchain", "CryptoBank", "London", "UK", "£100k - £145k", "talent@cryptobank.io", "https://cryptobank.io/jobs");
     insert.run("Product Manager, Travel (Experience)", "Curate the best travel experiences", "TravelJoy", "Dubai", "UAE", "AED 40k - 58k / mo", "hr@traveljoy.com", "https://traveljoy.com/apply");
     insert.run("Lead PM, Enterprise Software", "Build tools for big business", "BizSoftware", "Boston", "USA", "$195k - $250k", "jobs@bizsoftware.com", "https://bizsoftware.com/careers");
+  }
+
+  // Batch 5: Jobs with no email
+  if (checkBatch5.count === 0) {
+    insert.run("Product Manager, No Email", "This job has no email, only LinkedIn", "LinkedInOnly", "San Francisco", "USA", "$150k - $200k", "", "https://linkedin.com/jobs/view/12345");
+    insert.run("Senior PM, Stealth Startup", "Building something secret", "StealthCo", "New York", "USA", "$180k - $220k", "", "https://linkedin.com/jobs/view/67890");
+    insert.run("Product Manager, Web3 Gaming", "Next gen gaming", "GameFi", "Remote", "Global", "$130k - $170k", "", "https://linkedin.com/jobs/view/11111");
+    insert.run("Lead PM, AI Agents", "Autonomous agents", "AgentAI", "London", "UK", "£90k - £130k", "", "https://linkedin.com/jobs/view/22222");
+    insert.run("Product Manager, Creator Economy", "Tools for creators", "CreateSpace", "Los Angeles", "USA", "$140k - $180k", "", "https://linkedin.com/jobs/view/33333");
   }
 }
 
