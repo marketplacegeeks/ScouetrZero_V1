@@ -1,87 +1,111 @@
-import { useState, useEffect, createContext, useContext, ReactNode, FormEvent, MouseEvent } from 'react';
-import { MapPin, Building2, Sparkles, ExternalLink, Mail, Filter, Linkedin, ChevronRight, Copy, Check, Lock, X, Search, Bell, Bookmark } from 'lucide-react';
+import { useState, useEffect, createContext, useContext, ReactNode, FormEvent, MouseEvent, useRef } from 'react';
+import { MapPin, Building2, Sparkles, ExternalLink, Mail, Filter, Linkedin, ChevronRight, Copy, Check, Lock, X, Search, Bell, Bookmark, MessageCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { BrowserRouter, Routes, Route, Link, useParams, useLocation, useNavigate } from 'react-router-dom';
 
 // --- Auth & Usage Logic ---
 
 interface UsageState {
-  viewedEmails: string[];
-  viewedLinks: string[];
+  hasGated: boolean;
+  linkedinClickCount: number;
   userEmail: string | null;
+  subscribed: boolean;
 }
 
-const MAX_EMAILS = 3;
-const MAX_LINKS = 3;
+const COOKIE_NAME = 'scouter_gated';
+
+const setGatedCookie = () => {
+  const date = new Date();
+  date.setTime(date.getTime() + (365 * 24 * 60 * 60 * 1000));
+  document.cookie = `${COOKIE_NAME}=true; expires=${date.toUTCString()}; path=/; SameSite=Lax`;
+};
+
+const getGatedCookie = () => {
+  return document.cookie.split('; ').some(row => row.startsWith(`${COOKIE_NAME}=`));
+};
 
 const UsageContext = createContext<{
   usage: UsageState;
-  trackEmail: (email: string) => boolean; // returns true if allowed
+  trackEmail: (email: string, id: number) => 'allow' | 'reveal' | 'deny';
   trackLink: (link: string) => boolean; // returns true if allowed
-  login: (email: string) => void;
+  completeGate: (email: string, subscribe: boolean) => void;
   showLoginModal: boolean;
   setShowLoginModal: (show: boolean) => void;
+  gateType: 'email' | 'linkedin';
+  setGateType: (type: 'email' | 'linkedin') => void;
+  pendingLink: string | null;
+  setPendingLink: (link: string | null) => void;
 } | null>(null);
 
 function UsageProvider({ children }: { children: ReactNode }) {
   const [usage, setUsage] = useState<UsageState>(() => {
     const saved = localStorage.getItem('scouter_usage');
-    const defaultState = { viewedEmails: [], viewedLinks: [], userEmail: null };
+    const hasCookie = getGatedCookie();
+    const defaultState = { hasGated: hasCookie, linkedinClickCount: 0, userEmail: null, subscribed: false };
+    
     if (!saved) return defaultState;
     try {
       const parsed = JSON.parse(saved);
-      // Merge with default state to ensure all properties exist (e.g. if viewedLinks was missing)
-      return { ...defaultState, ...parsed };
+      return { ...defaultState, ...parsed, hasGated: hasCookie || parsed.hasGated };
     } catch (e) {
-      console.error('Failed to parse usage state', e);
       return defaultState;
     }
   });
+
   const [showLoginModal, setShowLoginModal] = useState(false);
+  const [gateType, setGateType] = useState<'email' | 'linkedin'>('email');
+  const [pendingLink, setPendingLink] = useState<string | null>(null);
 
   useEffect(() => {
     localStorage.setItem('scouter_usage', JSON.stringify(usage));
+    if (usage.hasGated && !getGatedCookie()) {
+      setGatedCookie();
+    }
   }, [usage]);
 
-  const trackEmail = (email: string) => {
-    if (usage.userEmail) return true;
-    if (usage.viewedEmails?.includes(email)) return true;
-    
-    if ((usage.viewedEmails?.length || 0) >= MAX_EMAILS) {
-      setShowLoginModal(true);
-      return false;
-    }
-
-    setUsage(prev => ({
-      ...prev,
-      viewedEmails: [...(prev.viewedEmails || []), email]
-    }));
-    return true;
+  const trackEmail = (id: number) => {
+    if (usage.hasGated) return 'allow';
+    return 'reveal';
   };
 
   const trackLink = (link: string) => {
-    if (usage.userEmail) return true;
-    if (usage.viewedLinks?.includes(link)) return true;
-
-    if ((usage.viewedLinks?.length || 0) >= MAX_LINKS) {
-      setShowLoginModal(true);
-      return false;
+    if (usage.hasGated) return true;
+    
+    if (usage.linkedinClickCount === 0) {
+      setUsage(prev => ({ ...prev, linkedinClickCount: 1 }));
+      return true;
     }
 
-    setUsage(prev => ({
-      ...prev,
-      viewedLinks: [...(prev.viewedLinks || []), link]
-    }));
-    return true;
+    setGateType('linkedin');
+    setPendingLink(link);
+    setShowLoginModal(true);
+    return false;
   };
 
-  const login = (email: string) => {
-    setUsage(prev => ({ ...prev, userEmail: email }));
+  const completeGate = (email: string, subscribe: boolean) => {
+    setUsage(prev => ({ ...prev, hasGated: true, userEmail: email, subscribed: subscribe }));
+    setGatedCookie();
     setShowLoginModal(false);
+    
+    if (pendingLink) {
+      window.open(pendingLink, '_blank');
+      setPendingLink(null);
+    }
   };
 
   return (
-    <UsageContext.Provider value={{ usage, trackEmail, trackLink, login, showLoginModal, setShowLoginModal }}>
+    <UsageContext.Provider value={{ 
+      usage, 
+      trackEmail, 
+      trackLink, 
+      completeGate, 
+      showLoginModal, 
+      setShowLoginModal,
+      gateType,
+      setGateType,
+      pendingLink,
+      setPendingLink
+    }}>
       {children}
       <LoginModal />
     </UsageContext.Provider>
@@ -95,20 +119,18 @@ function useUsage() {
 }
 
 function LoginModal() {
-  const { showLoginModal, setShowLoginModal, login, usage } = useUsage();
+  const { showLoginModal, setShowLoginModal, completeGate, gateType } = useUsage();
   const [email, setEmail] = useState('');
+  const [subscribe, setSubscribe] = useState(true);
 
   if (!showLoginModal) return null;
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
     if (email.trim() && email.includes('@')) {
-      login(email);
+      completeGate(email, subscribe);
     }
   };
-
-  const isEmailLimit = (usage.viewedEmails?.length || 0) >= MAX_EMAILS;
-  const isLinkLimit = (usage.viewedLinks?.length || 0) >= MAX_LINKS;
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-plum/60 backdrop-blur-sm">
@@ -125,16 +147,16 @@ function LoginModal() {
         </button>
 
         <div className="w-16 h-16 bg-burgundy/10 rounded-2xl flex items-center justify-center mb-6 mx-auto">
-          <Lock className="w-8 h-8 text-burgundy" />
+          <Mail className="w-8 h-8 text-burgundy" />
         </div>
 
-        <h2 className="text-2xl font-bold text-center mb-2">Unlock Full Access</h2>
+        <h2 className="text-2xl font-bold text-center mb-2">
+          {gateType === 'email' ? 'Unlock Recruiter Contacts' : 'Continue Accessing Jobs'}
+        </h2>
         <p className="text-plum/60 text-center mb-8">
-          {isEmailLimit 
-            ? `You've viewed your ${MAX_EMAILS} free recruiter emails. Join ScouterZero to see more.` 
-            : isLinkLimit
-              ? `You've used your ${MAX_LINKS} free LinkedIn profile views. Join ScouterZero to continue.`
-              : "Join our community of Product Managers to access direct recruiter contacts."}
+          {gateType === 'email' 
+            ? "Enter your email to unlock direct recruiter contacts." 
+            : "Enter your email to keep accessing job listings."}
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -149,14 +171,30 @@ function LoginModal() {
               className="w-full px-4 py-3 border border-sand rounded-xl focus:outline-none focus:ring-2 focus:ring-burgundy transition-all"
             />
           </div>
+
+          <div className="flex items-center gap-2 px-1">
+            <input 
+              type="checkbox" 
+              id="subscribe"
+              checked={subscribe}
+              onChange={(e) => setSubscribe(e.target.checked)}
+              className="w-4 h-4 accent-burgundy cursor-pointer"
+            />
+            <label htmlFor="subscribe" className="text-sm text-plum/70 cursor-pointer select-none">
+              Subscribe to email list
+            </label>
+          </div>
+
           <button 
             type="submit"
-            className="w-full py-4 bg-burgundy text-white rounded-xl font-bold hover:bg-burgundy-dark transition-all shadow-lg shadow-burgundy/10"
+            className="w-full py-4 bg-burgundy text-white rounded-xl font-bold hover:bg-burgundy-dark transition-all shadow-lg shadow-burgundy/20 active:scale-[0.98]"
           >
-            Continue with Email
+            Unlock Access &rarr;
           </button>
+          <p className="text-[10px] text-center text-plum/40 px-4">
+            By continuing, you agree to receive job alerts and updates. We never spam.
+          </p>
         </form>
-
         <p className="mt-6 text-center text-xs text-plum/50">
           By continuing, you agree to our{' '}
           <Link 
@@ -211,7 +249,7 @@ function JobBoard({ initialCity = '', initialCountry = '', hideHero = false }: {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
   const { pathname } = useLocation();
-  const { trackEmail, trackLink, usage } = useUsage();
+  const { trackEmail, trackLink, usage, setGateType, setShowLoginModal } = useUsage();
 
   // Filters
   const [searchQuery, setSearchQuery] = useState('');
@@ -222,14 +260,47 @@ function JobBoard({ initialCity = '', initialCountry = '', hideHero = false }: {
   const [currentPage, setCurrentPage] = useState(1);
   const [jobsPerPage, setJobsPerPage] = useState<number | 'all'>(20);
   const [copiedId, setCopiedId] = useState<number | null>(null);
+  const [revealedIds, setRevealedIds] = useState<Set<number>>(new Set());
+  const [blurredIds, setBlurredIds] = useState<Set<number>>(new Set());
+  const hasGatedRef = useRef(usage.hasGated);
+
+  useEffect(() => {
+    hasGatedRef.current = usage.hasGated;
+  }, [usage.hasGated]);
 
   const handleCopyEmail = (email: string, id: number) => {
     if (!email) return;
-    if (trackEmail(email)) {
+    
+    if (usage.hasGated) {
       navigator.clipboard.writeText(email);
       setCopiedId(id);
       setTimeout(() => setCopiedId(null), 2000);
+      return;
     }
+
+    if (blurredIds.has(id)) {
+      setGateType('email');
+      setShowLoginModal(true);
+      return;
+    }
+
+    if (revealedIds.has(id)) return;
+
+    // First time reveal
+    setRevealedIds(prev => new Set(prev).add(id));
+    
+    setTimeout(() => {
+      if (hasGatedRef.current) return;
+      
+      setRevealedIds(prev => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      setBlurredIds(prev => new Set(prev).add(id));
+      setGateType('email');
+      setShowLoginModal(true);
+    }, 2000);
   };
 
   const handleLinkClick = (e: MouseEvent, link: string) => {
@@ -238,9 +309,17 @@ function JobBoard({ initialCity = '', initialCountry = '', hideHero = false }: {
     }
   };
 
-  const isEmailViewed = (email: string) => {
-    return usage.userEmail || usage.viewedEmails.includes(email);
+  const isEmailViewed = (id: number) => {
+    return usage.hasGated || revealedIds.has(id) || blurredIds.has(id);
   };
+
+  // Clear reveal/blur states when access is granted
+  useEffect(() => {
+    if (usage.hasGated) {
+      setRevealedIds(new Set());
+      setBlurredIds(new Set());
+    }
+  }, [usage.hasGated]);
 
   // Reset filters when route changes
   useEffect(() => {
@@ -284,7 +363,7 @@ function JobBoard({ initialCity = '', initialCountry = '', hideHero = false }: {
     return matchesSearch && matchesLocation && matchesRemote;
   });
 
-  const uniqueLocations = Array.from(new Set(jobs.map(j => `${j.city}, ${j.country}`))).sort();
+  const uniqueLocations = Array.from(new Set(jobs.map(j => `${j.city}, ${j.country}`))).sort() as string[];
 
   const totalPages = jobsPerPage === 'all' ? 1 : Math.ceil(filteredJobs.length / jobsPerPage);
   const paginatedJobs = jobsPerPage === 'all' 
@@ -294,6 +373,7 @@ function JobBoard({ initialCity = '', initialCountry = '', hideHero = false }: {
   const getHeadline = () => {
     if (initialCity === 'Dubai') return "ScouterZero – Product Manager Jobs in Dubai";
     if (initialCity === 'London') return "ScouterZero – Product Manager Jobs in London";
+    if (initialCity === 'New York') return "ScouterZero – Product Manager Jobs in New York";
     if (initialCity === 'Remote') return "ScouterZero – Remote Product Manager Jobs";
     if (initialCountry === 'USA') return "ScouterZero – Product Manager Jobs in the United States";
     return "ScouterZero – Product Manager Jobs with Direct Recruiter Contacts";
@@ -303,12 +383,39 @@ function JobBoard({ initialCity = '', initialCountry = '', hideHero = false }: {
     <>
       {/* Hero Section */}
       {!hideHero && (
-        <header className="bg-canvas border-b border-sand py-12 sm:py-16">
+        <header className="bg-canvas border-b border-sand pt-6 pb-2 sm:pt-8 sm:pb-2">
           <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-            <div className="inline-flex items-center gap-2 px-3 py-1 bg-burgundy/10 text-burgundy-dark rounded-full text-sm font-bold mb-6">
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mb-4 flex justify-center"
+            >
+              <a 
+                href="https://wa.me/+919403052811" 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2.5 group"
+              >
+                <div className="p-1 bg-[#25D366]/10 rounded-xl group-hover:bg-[#25D366]/20 transition-all duration-300 group-hover:scale-105">
+                  <svg 
+                    viewBox="0 0 24 24" 
+                    className="w-4 h-4 fill-[#25D366]"
+                    xmlns="http://www.w3.org/2000/svg"
+                  >
+                    <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/>
+                  </svg>
+                </div>
+                <span className="text-sm font-medium text-plum/50 group-hover:text-plum transition-colors">Feedback</span>
+              </a>
+            </motion.div>
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="inline-flex items-center gap-2 px-4 py-1 bg-burgundy/5 text-burgundy rounded-full text-sm font-bold mb-3 border border-burgundy/10"
+            >
               <Sparkles className="w-4 h-4" />
-              {jobs.length} roles
-            </div>
+              6945+ PMs joined ScouterZero in our first 30 days
+            </motion.div>
             <motion.h1 
               key={pathname}
               initial={{ opacity: 0, y: 10 }}
@@ -317,7 +424,7 @@ function JobBoard({ initialCity = '', initialCountry = '', hideHero = false }: {
             >
               {getHeadline()}
             </motion.h1>
-            <p className="text-lg text-plum/60 font-normal mb-8 max-w-2xl mx-auto">
+            <p className="text-lg text-plum/60 font-normal mb-8 mx-auto max-w-4xl">
               Skip the black hole. Get direct recruiter emails for PM, design, and engineering roles.
             </p>
             
@@ -363,17 +470,38 @@ function JobBoard({ initialCity = '', initialCountry = '', hideHero = false }: {
               </button>
             </div>
             
-            <div className="mt-6 text-sm text-plum/60 font-medium">
+            <div className="mt-4 text-sm text-plum/60 font-medium">
               {filteredJobs.length} active roles &middot; Updated daily
+            </div>
+
+            <div className="mt-8 flex flex-wrap items-center justify-center gap-x-6 gap-y-3">
+              <span className="text-xs font-bold text-plum/40 uppercase tracking-widest">Browse by Location:</span>
+              <div className="flex flex-wrap justify-center gap-3">
+                {[
+                  { name: 'Dubai', path: '/dubai' },
+                  { name: 'London', path: '/london' },
+                  { name: 'New York', path: '/new-york' },
+                  { name: 'United States', path: '/usa' },
+                  { name: 'Remote', path: '/remote' }
+                ].map((loc) => (
+                  <Link 
+                    key={loc.path}
+                    to={loc.path}
+                    className="px-4 py-1.5 bg-white border border-sand rounded-full text-sm font-semibold text-plum/70 hover:border-burgundy hover:text-burgundy hover:shadow-md transition-all duration-200"
+                  >
+                    {loc.name}
+                  </Link>
+                ))}
+              </div>
             </div>
           </div>
         </header>
       )}
 
       {/* Main Content - Job Cards */}
-      <main className={`max-w-4xl mx-auto py-10 px-4 sm:px-6 lg:px-8 ${hideHero ? 'pt-0' : ''}`}>
+      <main className={`max-w-4xl mx-auto pb-10 pt-4 px-4 sm:px-6 lg:px-8 ${hideHero ? 'pt-0' : ''}`}>
         {hideHero && (
-          <div className="mb-10">
+          <div className="mb-4">
             <div className="bg-white p-2 rounded-2xl shadow-sm border border-sand flex flex-col sm:flex-row gap-2">
               <div className="relative flex-1">
                 <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-plum/50" />
@@ -511,10 +639,12 @@ function JobBoard({ initialCity = '', initialCountry = '', hideHero = false }: {
                                   <Check className="w-4 h-4" />
                                   Copied!
                                 </>
-                              ) : isEmailViewed(job.email) ? (
+                              ) : isEmailViewed(job.id) ? (
                                 <>
                                   <Mail className="w-4 h-4" />
-                                  {job.email}
+                                  <span className={(blurredIds.has(job.id) && !revealedIds.has(job.id) && !usage.hasGated) ? "blur-sm select-none" : ""}>
+                                    {job.email}
+                                  </span>
                                 </>
                               ) : (
                                 <>
@@ -531,15 +661,10 @@ function JobBoard({ initialCity = '', initialCountry = '', hideHero = false }: {
                               target="_blank"
                               rel="noopener noreferrer"
                               onClick={(e) => handleLinkClick(e, job.link)}
-                              className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2 ${
-                                job.email 
-                                  ? 'bg-burgundy/5 text-burgundy-dark hover:bg-burgundy/10' 
-                                  : 'border border-burgundy text-burgundy hover:bg-burgundy/5'
-                              }`}
+                              className="flex-1 sm:flex-none px-4 py-2 border border-sand text-plum/70 rounded-lg text-sm font-medium hover:bg-sand/20 transition-colors flex items-center justify-center gap-2"
                             >
-                              <Linkedin className="w-4 h-4" />
-                              <span className="hidden sm:inline">View on LinkedIn</span>
-                              <span className="sm:hidden">LinkedIn</span>
+                              <Linkedin className="w-4 h-4 text-[#0a66c2] fill-[#0a66c2]" />
+                              <span>View on LinkedIn</span>
                             </a>
                           )}
                           
@@ -574,24 +699,46 @@ function JobBoard({ initialCity = '', initialCountry = '', hideHero = false }: {
       </main>
 
       {/* SEO Locations Section */}
-      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 border-t border-sand">
-        <h2 className="text-xl font-bold mb-6">Popular Locations</h2>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          <Link to="/dubai" className="flex items-center justify-between p-4 bg-white border border-sand rounded-2xl hover:border-burgundy transition-colors group">
-            <span className="font-medium">Dubai</span>
-            <ChevronRight className="w-4 h-4 text-plum/50 group-hover:text-burgundy" />
+      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16 border-t border-sand">
+        <div className="flex items-center justify-between mb-8">
+          <h2 className="text-2xl font-bold text-plum">Popular PM Hubs</h2>
+          <div className="h-px flex-1 bg-sand ml-6 hidden sm:block"></div>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+          <Link to="/dubai" className="flex items-center justify-between p-5 bg-white border border-sand rounded-2xl hover:border-burgundy hover:shadow-lg transition-all group">
+            <div>
+              <span className="block font-bold text-plum group-hover:text-burgundy">Dubai</span>
+              <span className="text-xs text-plum/50">United Arab Emirates</span>
+            </div>
+            <ChevronRight className="w-5 h-5 text-plum/30 group-hover:text-burgundy group-hover:translate-x-1 transition-all" />
           </Link>
-          <Link to="/london" className="flex items-center justify-between p-4 bg-white border border-sand rounded-2xl hover:border-burgundy transition-colors group">
-            <span className="font-medium">London</span>
-            <ChevronRight className="w-4 h-4 text-plum/50 group-hover:text-burgundy" />
+          <Link to="/london" className="flex items-center justify-between p-5 bg-white border border-sand rounded-2xl hover:border-burgundy hover:shadow-lg transition-all group">
+            <div>
+              <span className="block font-bold text-plum group-hover:text-burgundy">London</span>
+              <span className="text-xs text-plum/50">United Kingdom</span>
+            </div>
+            <ChevronRight className="w-5 h-5 text-plum/30 group-hover:text-burgundy group-hover:translate-x-1 transition-all" />
           </Link>
-          <Link to="/remote" className="flex items-center justify-between p-4 bg-white border border-sand rounded-2xl hover:border-burgundy transition-colors group">
-            <span className="font-medium">Remote</span>
-            <ChevronRight className="w-4 h-4 text-plum/50 group-hover:text-burgundy" />
+          <Link to="/new-york" className="flex items-center justify-between p-5 bg-white border border-sand rounded-2xl hover:border-burgundy hover:shadow-lg transition-all group">
+            <div>
+              <span className="block font-bold text-plum group-hover:text-burgundy">New York</span>
+              <span className="text-xs text-plum/50">United States</span>
+            </div>
+            <ChevronRight className="w-5 h-5 text-plum/30 group-hover:text-burgundy group-hover:translate-x-1 transition-all" />
           </Link>
-          <Link to="/usa" className="flex items-center justify-between p-4 bg-white border border-sand rounded-2xl hover:border-burgundy transition-colors group">
-            <span className="font-medium">United States</span>
-            <ChevronRight className="w-4 h-4 text-plum/50 group-hover:text-burgundy" />
+          <Link to="/usa" className="flex items-center justify-between p-5 bg-white border border-sand rounded-2xl hover:border-burgundy hover:shadow-lg transition-all group">
+            <div>
+              <span className="block font-bold text-plum group-hover:text-burgundy">United States</span>
+              <span className="text-xs text-plum/50">North America</span>
+            </div>
+            <ChevronRight className="w-5 h-5 text-plum/30 group-hover:text-burgundy group-hover:translate-x-1 transition-all" />
+          </Link>
+          <Link to="/remote" className="flex items-center justify-between p-5 bg-white border border-sand rounded-2xl hover:border-burgundy hover:shadow-lg transition-all group">
+            <div>
+              <span className="block font-bold text-plum group-hover:text-burgundy">Remote</span>
+              <span className="text-xs text-plum/50">Work from anywhere</span>
+            </div>
+            <ChevronRight className="w-5 h-5 text-plum/30 group-hover:text-burgundy group-hover:translate-x-1 transition-all" />
           </Link>
         </div>
       </section>
@@ -601,7 +748,12 @@ function JobBoard({ initialCity = '', initialCountry = '', hideHero = false }: {
 
 function LocationLanding() {
   const { location } = useParams();
-  const cityMap: Record<string, string> = { 'dubai': 'Dubai', 'london': 'London', 'remote': 'Remote' };
+  const cityMap: Record<string, string> = { 
+    'dubai': 'Dubai', 
+    'london': 'London', 
+    'remote': 'Remote',
+    'new-york': 'New York'
+  };
   const countryMap: Record<string, string> = { 'usa': 'USA' };
   
   const city = cityMap[location || ''];
@@ -619,6 +771,12 @@ function LocationLanding() {
       subtitle: "Build the future in Europe's leading tech capital.",
       body: "London remains at the forefront of global innovation, particularly in FinTech, AI, and Creative Tech. The city's diverse talent pool and access to venture capital make it an ideal place for Product Managers to scale products from seed stage to IPO. From East London's Tech City to the giants in King's Cross, the opportunities are endless.",
       highlights: ["World-leading FinTech hub", "Access to global VC capital", "Diverse and international culture", "Thriving tech community"]
+    },
+    'new-york': {
+      title: "Product Manager Jobs in New York",
+      subtitle: "Lead innovation in the world's financial and media capital.",
+      body: "New York City's tech scene, often called 'Silicon Alley', is a powerhouse of innovation across Finance, Media, Advertising, and HealthTech. For Product Managers, NYC offers a unique blend of established giants and high-growth startups, all operating in one of the world's most dynamic urban environments.",
+      highlights: ["Epicenter of FinTech and Media", "Unmatched networking opportunities", "Diverse industry landscape", "High-energy startup culture"]
     },
     'remote': {
       title: "Remote Product Manager Jobs",
@@ -648,6 +806,14 @@ function LocationLanding() {
               initial={{ opacity: 0, x: -20 }}
               animate={{ opacity: 1, x: 0 }}
             >
+              <motion.div
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="inline-flex items-center gap-2 px-4 py-1.5 bg-burgundy/5 text-burgundy rounded-full text-sm font-bold mb-6 border border-burgundy/10"
+              >
+                <Sparkles className="w-4 h-4" />
+                6945+ PMs joined ScouterZero in our first 30 days
+              </motion.div>
               <h1 className="text-4xl sm:text-5xl md:text-6xl font-extrabold tracking-tight text-plum mb-6">
                 {content.title}
               </h1>
@@ -700,9 +866,13 @@ function About() {
           animate={{ opacity: 1, y: 0 }}
           className="prose prose-lg max-w-none"
         >
-          <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight text-plum mb-8">
+          <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight text-plum mb-4">
             The ScouterZero Story
           </h1>
+          <p className="text-burgundy font-bold mb-8 flex items-center gap-2">
+            <Sparkles className="w-5 h-5" />
+            6945+ PMs joined ScouterZero in our first 30 days
+          </p>
           
           <section className="mb-12">
             <h2 className="text-2xl font-bold text-plum mb-4">Why We Exist: Breaking the "ATS Black Hole"</h2>
@@ -953,7 +1123,7 @@ export default function App() {
           {/* Navigation */}
           <nav className="fixed top-0 left-0 right-0 z-50 bg-white/80 backdrop-blur-md border-b border-sand">
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-              <div className="flex justify-between items-center h-16">
+              <div className="flex justify-between items-center h-12">
                 <div className="flex items-center">
                   <Link to="/" className="flex items-center gap-2">
                     <Sparkles className="w-6 h-6 text-burgundy" />
@@ -963,7 +1133,7 @@ export default function App() {
                 <div className="flex items-center gap-4 sm:gap-8">
                   <div className="hidden md:flex items-center gap-6 text-sm font-medium text-plum/60">
                     <Link to="/about" className="hover:text-plum transition-colors">About</Link>
-                    <Link to="/post-job" className="hover:text-plum transition-colors">Post a Job</Link>
+                    <Link to="/contact" className="hover:text-plum transition-colors">Contact Us</Link>
                     <a 
                       href="https://linkedinmsgextension.scouterzero.com/" 
                       target="_blank" 
@@ -978,9 +1148,9 @@ export default function App() {
                       href="https://www.linkedin.com/company/scouterzero/"
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="inline-flex items-center gap-2 px-4 py-2 bg-burgundy text-white rounded-full text-sm font-medium hover:bg-burgundy-dark transition-colors"
+                      className="inline-flex items-center gap-1.5 sm:gap-2 px-3 py-1.5 sm:px-5 sm:py-2.5 bg-[#0a66c2] text-white rounded-lg text-[11px] sm:text-sm font-bold hover:bg-[#004182] transition-all shadow-sm active:scale-95 whitespace-nowrap"
                     >
-                      <Linkedin className="w-4 h-4" />
+                      <Linkedin className="w-3 h-3 sm:w-4 sm:h-4 fill-white" />
                       Follow on LinkedIn
                     </a>
                   </div>
@@ -990,7 +1160,7 @@ export default function App() {
           </nav>
 
           {/* Spacer for fixed navigation */}
-          <div className="h-16" />
+          <div className="h-12" />
 
           <Routes>
             <Route path="/" element={<JobBoard />} />
